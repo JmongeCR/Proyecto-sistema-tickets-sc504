@@ -3,7 +3,7 @@ from tkinter import ttk, messagebox
 from db.connection import connect_to_db
 import oracledb
 
-def open_register_window():
+def open_register_window(is_admin=False):
     from gui.login_window import login_window  
 
     reg = tk.Tk()
@@ -39,7 +39,13 @@ def open_register_window():
             cursor.execute("SELECT ID_ROL, NOMBRE_ROL FROM TKT_ROL")
             for rol_id, rol_name in cursor.fetchall():
                 roles_dict[rol_name] = rol_id
-            combo_rol['values'] = list(roles_dict.keys())
+
+            if is_admin:
+                combo_rol['values'] = list(roles_dict.keys())
+                combo_rol.set("Usuario")
+            else:
+                combo_rol['values'] = ["Usuario"]
+                combo_rol.current(0)
         except Exception as e:
             messagebox.showerror("Error", str(e))
         finally:
@@ -64,9 +70,11 @@ def open_register_window():
         if conn:
             try:
                 cursor = conn.cursor()
-                existe = cursor.callfunc("PKG_USUARIOS.EXISTE_CORREO", oracledb.NUMBER, [correo])
-                if existe == 1:
-                    messagebox.showerror("Error", "El correo ya está registrado.")
+                existe = cursor.var(oracledb.NUMBER)  # variable OUT
+                cursor.callproc("PKG_USUARIOS.EXISTE_CORREO", [correo, existe])
+
+                if existe.getvalue() == 1:
+                    messagebox.showerror("Error", "Este correo ya está registrado")
                     return
 
                 cursor.callproc("PKG_USUARIOS.INSERTAR_USUARIO", [
@@ -75,7 +83,8 @@ def open_register_window():
                 conn.commit()
                 messagebox.showinfo("Éxito", "Usuario registrado correctamente.")
                 reg.destroy()
-                login_window()
+                if not is_admin:
+                    login_window()
             except Exception as e:
                 messagebox.showerror("Error", str(e))
             finally:
@@ -84,7 +93,8 @@ def open_register_window():
 
     def regresar():
         reg.destroy()
-        login_window()
+        if not is_admin:
+            login_window()
 
     # Botones
     tk.Button(reg, text="Registrar", command=register_user).pack(pady=10)
