@@ -1,7 +1,7 @@
+# gui/main_window.py
 import sys
 import os
 import importlib
-
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 

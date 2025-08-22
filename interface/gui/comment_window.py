@@ -1,69 +1,167 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
-from db.connection import connect_to_db
+from tkinter import messagebox
+try:
+    from tkinter import ttk
+    HAS_COMBO = hasattr(ttk, "Combobox")
+except Exception:
+    ttk = None
+    HAS_COMBO = False
+
 import oracledb
+from db.connection import connect_to_db
 
-def open_comment_window(parent, ticket_id, user_id):
+
+def _load_listas():
+    conn = cur = None
+    out = {"estados": {}, "prioridades": {}, "categorias": {}}
+    try:
+        conn = connect_to_db(); cur = conn.cursor()
+        for proc, key in [
+            ("PKG_UI_LISTAS.LISTAR_ESTADOS", "estados"),
+            ("PKG_UI_LISTAS.LISTAR_PRIORIDADES", "prioridades"),
+            ("PKG_UI_LISTAS.LISTAR_CATEGORIAS",  "categorias"),
+        ]:
+            rc = cur.var(oracledb.DB_TYPE_CURSOR)
+            cur.callproc(proc, [rc])
+            out[key] = {str(r[1]): int(r[0]) for r in rc.getvalue().fetchall()}
+    finally:
+        try:
+            if cur: cur.close()
+            if conn: conn.close()
+        except: pass
+    return out
+
+
+def open_edit_ticket_window(parent, id_ticket, asunto_actual, id_usuario):
     win = tk.Toplevel(parent)
-    win.title("Comentarios del Ticket")
-    win.geometry("600x400")
+    win.title(f"Editar Ticket #{id_ticket}")
+    win.geometry("780x560")
+    win.transient(parent); win.grab_set()
 
-    tk.Label(win, text=f"Comentarios del Ticket #{ticket_id}", font=("Arial", 12, "bold")).pack(pady=10)
+    top = tk.Frame(win); top.pack(fill=tk.X, padx=12, pady=8)
 
-    comment_list = tk.Listbox(win, width=80, height=10)
-    comment_list.pack(pady=10)
+    tk.Label(top, text="Asunto", width=12, anchor="w").grid(row=0, column=0, sticky="w")
+    ent_asunto = tk.Entry(top); ent_asunto.insert(0, asunto_actual or "")
+    ent_asunto.grid(row=0, column=1, sticky="ew", padx=(0,10))
 
-    def cargar_comentarios():
-        comment_list.delete(0, tk.END)
-        conn = connect_to_db()
-        if conn:
-            try:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT c.ID_COMENTARIO, u.NOMBRE || ' ' || u.APELLIDO1 AS USUARIO,
-                           c.CONTENIDO, TO_CHAR(c.FECHA_COMENTARIO, 'DD-MM-YYYY HH24:MI')
-                    FROM TKT_COMENTARIO c
-                    JOIN TKT_USUARIO u ON c.ID_USUARIO = u.ID_USUARIO
-                    WHERE c.ID_TICKET = :1
-                    ORDER BY c.FECHA_COMENTARIO DESC
-                """, (ticket_id,))
+    tk.Label(top, text="Descripción", width=12, anchor="w").grid(row=1, column=0, sticky="nw")
+    txt_desc = tk.Text(top, height=5); txt_desc.grid(row=1, column=1, sticky="ew")
+    top.columnconfigure(1, weight=1)
 
-                for row in cur.fetchall():
-                    comment_list.insert(tk.END, f"[{row[3]}] {row[1]}: {row[2]}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Error al cargar comentarios: {e}")
-            finally:
-                cur.close()
-                conn.close()
+    listas = _load_listas()
 
-    # Caja de nuevo comentario
-    tk.Label(win, text="Nuevo Comentario:").pack()
-    text_comentario = tk.Text(win, height=4, width=70)
-    text_comentario.pack(pady=5)
+    def mk_selector(parent, label, values: dict, row):
+        tk.Label(parent, text=label, width=12, anchor="w").grid(row=row, column=0, sticky="w", pady=4)
+        names = list(values.keys()); default = names[0] if names else ""
+        if HAS_COMBO:
+            cb = ttk.Combobox(parent, state="readonly", values=names)
+            if default: cb.set(default)
+            cb.grid(row=row, column=1, sticky="ew")
+            return lambda: values.get(cb.get())
+        else:
+            var = tk.StringVar(value=default)
+            tk.OptionMenu(parent, var, *names).grid(row=row, column=1, sticky="ew")
+            return lambda: values.get(var.get())
 
-    def agregar_comentario():
-        contenido = text_comentario.get("1.0", tk.END).strip()
-        if not contenido:
-            messagebox.showwarning("Advertencia", "El comentario no puede estar vacío")
+    get_estado    = mk_selector(top, "Estado",    listas["estados"],    2)
+    get_prioridad = mk_selector(top, "Prioridad", listas["prioridades"], 3)
+    get_categoria = mk_selector(top, "Categoría", listas["categorias"], 4)
+
+    def guardar():
+        asunto = ent_asunto.get().strip()
+        desc   = txt_desc.get("1.0", "end-1c").strip()
+        if not asunto:
+            messagebox.showerror("Validación", "Digite un asunto.")
             return
-
-        conn = connect_to_db()
-        if conn:
+        conn = cur = None
+        try:
+            conn = connect_to_db(); cur = conn.cursor()
+            cur.callproc("PKG_TIQUETES.ACTUALIZAR_TICKET", [
+                int(id_ticket), asunto, desc,
+                int(get_estado()), int(get_prioridad()), int(get_categoria())
+            ])
+            conn.commit()
+            messagebox.showinfo("Éxito", "Ticket actualizado.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo actualizar el ticket:\n{e}")
+        finally:
             try:
-                cur = conn.cursor()
-                cur.callproc("PKG_COMENTARIOS.INSERTAR_COMENTARIO", [ticket_id, user_id, contenido])
-                conn.commit()
-                messagebox.showinfo("Éxito", "Comentario agregado correctamente")
-                text_comentario.delete("1.0", tk.END)
-                cargar_comentarios()
-            except Exception as e:
-                messagebox.showerror("Error", f"Error al insertar comentario: {e}")
-            finally:
-                cur.close()
-                conn.close()
+                if cur: cur.close()
+                if conn: conn.close()
+            except: pass
 
-    tk.Button(win, text="Agregar Comentario", command=agregar_comentario).pack(pady=5)
-    tk.Button(win, text="Cerrar", command=win.destroy).pack(pady=10)
+    tk.Button(top, text="Guardar Cambios", command=guardar).grid(row=5, column=1, sticky="e", pady=6)
 
-    cargar_comentarios()
-    win.mainloop()
+    # ----------- Comentarios (sin hilos) -----------
+    sep = tk.Frame(win, height=1, bg="#ddd"); sep.pack(fill=tk.X, padx=12, pady=4)
+
+    cm = tk.Frame(win); cm.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2,8))
+    tk.Label(cm, text=f"Comentarios del Ticket #{id_ticket}",
+             font=("Arial", 10, "bold")).pack(anchor="w")
+
+    list_frame = tk.Frame(cm); list_frame.pack(fill=tk.BOTH, expand=True, pady=(4,4))
+    lst = tk.Listbox(list_frame)
+    lst.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=lst.yview)
+    sb.pack(side=tk.RIGHT, fill=tk.Y)
+    lst.config(yscrollcommand=sb.set)
+
+    status = tk.Label(cm, text="", anchor="w")
+    status.pack(fill=tk.X)
+
+    entry_frame = tk.Frame(cm); entry_frame.pack(fill=tk.X, pady=(4,0))
+    tk.Label(entry_frame, text="Nuevo comentario:").pack(anchor="w")
+    txt = tk.Text(entry_frame, height=4)
+    txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    btn_add = tk.Button(entry_frame, text="Agregar")
+    btn_add.pack(side=tk.LEFT, padx=8)
+
+    def cargar():
+        status.config(text="Cargando comentarios…")
+        lst.delete(0, tk.END)
+        conn = cur = ref = None
+        try:
+            conn = connect_to_db(); cur = conn.cursor()
+            rc = cur.var(oracledb.DB_TYPE_CURSOR)
+            cur.callproc("PKG_COMENTARIOS.LISTAR_COMENTARIOS_X_TICKET", [int(id_ticket), rc])
+            ref = rc.getvalue()
+            for cid, usuario, contenido, fecha in (ref.fetchall() or []):
+                try:
+                    ftxt = fecha.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    ftxt = str(fecha)
+                lst.insert(tk.END, f"[{ftxt}] {usuario}: {contenido}")
+        except Exception as e:
+            messagebox.showerror("Comentarios", f"No se pudieron cargar:\n{e}")
+        finally:
+            status.config(text="")
+            try:
+                if ref: ref.close()
+                if cur: cur.close()
+                if conn: conn.close()
+            except: pass
+
+    def agregar():
+        contenido = txt.get("1.0", "end-1c").strip()
+        if not contenido:
+            messagebox.showwarning("Comentario", "El comentario no puede estar vacío.")
+            return
+        conn = cur = None
+        try:
+            conn = connect_to_db(); cur = conn.cursor()
+            cur.callproc("PKG_COMENTARIOS.INSERTAR_COMENTARIO",
+                         [int(id_ticket), int(id_usuario), contenido])
+            conn.commit()
+            txt.delete("1.0", "end")
+            cargar()
+        except Exception as e:
+            messagebox.showerror("Comentario", f"No se pudo insertar:\n{e}")
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except: pass
+
+    btn_add.config(command=agregar)
+    cargar()
+    return win
